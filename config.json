@@ -1,0 +1,7 @@
+﻿{
+  "serial_port": "auto",
+  "baud_rate": 115200,
+  "command_delay_seconds": 0.05,
+  "write_timeout_seconds": 5,
+  "line_ending": "crlf"
+}
