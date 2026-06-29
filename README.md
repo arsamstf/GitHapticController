@@ -123,3 +123,45 @@ Touch controls:
 - long press: `git push`
 
 Close MCUXpresso serial terminals, Tera Term, `serial_console.py`, and `git_haptic.py` before starting this listener.
+
+## Conflict Pilot
+
+Conflict Pilot runs `git pull` or `git push`, classifies common failures, and waits for touch approval before running one safe recovery command.
+
+```powershell
+python conflict_pilot.py push --repo C:\GitHapticController
+python conflict_pilot.py pull --repo C:\GitHapticController
+```
+
+Physical controls after a Git failure:
+
+- single tap: approve the suggested safe recovery command
+- double tap: print the explanation again
+- long press: retry the original command
+
+Safety rules:
+
+- no Groq or LLM is used in v1
+- no command runs without touch approval
+- no file conflicts are resolved automatically
+- after `git pull --rebase`, the script does not auto-push
+
+## Commit Pilot
+
+Commit Pilot stages, commits, and pushes basic changes without Groq. It uses simple file-based commit messages such as `Update Main.java`, `Update README`, or `Update project files`.
+
+```powershell
+python commit_pilot.py --repo C:\GitHapticJavaDemo
+```
+
+Physical controls:
+
+- single tap: `git status`
+- double tap: `git add -A`
+- long press: `git add -A`, basic `git commit -m ...`, then `git push`
+
+Use a fixed message when you want predictable demo commits:
+
+```powershell
+python commit_pilot.py --repo C:\GitHapticJavaDemo --message "Test controller commit"
+```
