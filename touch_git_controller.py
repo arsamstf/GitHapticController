@@ -300,8 +300,8 @@ def main() -> int:
 
     print(f"Opening {port} at {controller_config.baud_rate} baud.")
     print(f"Repo: {repo}")
-    print("Touch controls: single tap=status, double tap=pull, long touch=stage, commit, push.")
-    print("With old firmware fallback: triple tap=stage, commit, push.")
+    print("Touch controls: single tap=status, double tap=pull, hold=stage, commit, push.")
+    print("Old firmware fallback only: triple tap=stage, commit, push.")
     print(f"Tap window: {touch_config.double_tap_window_seconds:.2f}s")
     print("Press Ctrl+C to stop.\n")
 

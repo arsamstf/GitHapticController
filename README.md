@@ -124,6 +124,44 @@ Touch controls:
 
 Close MCUXpresso serial terminals, Tera Term, `serial_console.py`, and `git_haptic.py` before starting this listener.
 
+## ML Gesture Controller
+
+Use this after flashing the deployed Time Series Studio 4-class model. The script reads prediction lines like `PREDICT ... CLASS: 1`, waits for stable predictions, and maps them to Git commands.
+
+```powershell
+python ml_git_controller.py --repo C:\GitHapticJavaDemo
+```
+
+Class mapping:
+
+- `CLASS: 0`: Idle, no action
+- `CLASS: 1`: 1Tap, runs `git status` or confirms pending push
+- `CLASS: 2`: ShakeCancel, cancels pending push
+- `CLASS: 3`: TiltForward, runs `git pull`, then opens push approval
+
+Useful test modes:
+
+```powershell
+python ml_git_controller.py --repo C:\GitHapticJavaDemo --debug
+python ml_git_controller.py --repo C:\GitHapticJavaDemo --no-haptic
+python ml_git_controller.py --repo C:\GitHapticJavaDemo --no-setup
+```
+
+Push confirmation:
+
+- TiltForward runs `git pull`.
+- If pull succeeds, the script waits for push approval.
+- 1Tap confirms and runs `git push`.
+- ShakeCancel cancels the pending push.
+- If you do nothing, the pending push expires.
+
+Tune or disable the approval window:
+
+```powershell
+python ml_git_controller.py --repo C:\GitHapticJavaDemo --push-confirm-window 15
+python ml_git_controller.py --repo C:\GitHapticJavaDemo --push-confirm-window 0
+```
+
 ## Conflict Pilot
 
 Conflict Pilot runs `git pull` or `git push`, classifies common failures, and waits for touch approval before running one safe recovery command.
