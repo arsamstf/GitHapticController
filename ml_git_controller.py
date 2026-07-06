@@ -9,6 +9,7 @@ from pathlib import Path
 import serial
 
 from git_haptic import GitResult, print_git_result, run_git_action
+from groq_review import explain_git_failure, print_git_help, print_review, review_repo
 from haptic_controller import find_serial_port, load_config
 from touch_git_controller import SharedSerialHaptics, play_feedback
 
@@ -47,6 +48,20 @@ class PendingPush:
 
     def active(self) -> bool:
         return time.monotonic() < self.expires_at
+
+
+@dataclass
+class MotorState:
+    enabled: bool = True
+
+    def haptics(self, haptics: SharedSerialHaptics | None) -> SharedSerialHaptics | None:
+        if not self.enabled:
+            return None
+        return haptics
+
+    def toggle(self) -> bool:
+        self.enabled = not self.enabled
+        return self.enabled
 
 
 def parse_prediction(line: str) -> Prediction | None:
@@ -100,7 +115,32 @@ def start_prediction_mode(board: serial.Serial, line_ending: str, debug: bool) -
         drain_lines(board, seconds=0.35, debug=debug)
 
 
-def run_action(action: str, repo: Path, haptics: SharedSerialHaptics | None) -> GitResult:
+def print_ai_git_help(result: GitResult, enabled: bool) -> None:
+    if not enabled or result.succeeded or result.action not in {"pull", "push"}:
+        return
+
+    print("\nAsking Groq to explain the Git failure...")
+    try:
+        help_text = explain_git_failure(
+            repo=result.repo,
+            command=result.command,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+    except Exception as error:
+        print(f"Groq Git help failed: {error}")
+        return
+
+    print_git_help(help_text)
+
+
+def run_action(
+    action: str,
+    repo: Path,
+    haptics: SharedSerialHaptics | None,
+    ai_help: bool,
+) -> GitResult:
     print(f"\nGesture action: git {action}")
     result = run_git_action(action, repo)
     print_git_result(result)
@@ -108,6 +148,7 @@ def run_action(action: str, repo: Path, haptics: SharedSerialHaptics | None) -> 
     if haptics is not None:
         play_feedback(result, haptics)
 
+    print_ai_git_help(result, ai_help)
     print("\nListening for gestures.\n")
     return result
 
@@ -116,15 +157,39 @@ def stable_prediction(
     history: deque[Prediction],
     stable_count: int,
     confidence_threshold: float,
+    status_stable_count: int,
+    status_confidence_threshold: float,
+    shake_stable_count: int,
+    shake_confidence_threshold: float,
+    push_confirm_active: bool,
+    push_confirm_stable_count: int,
+    push_confirm_confidence_threshold: float,
 ) -> Prediction | None:
-    if len(history) < stable_count:
+    if not history:
         return None
 
-    window = list(history)[-stable_count:]
+    latest_class = history[-1].class_id
+    if latest_class == 1 and push_confirm_active:
+        required_count = push_confirm_stable_count
+        required_confidence = push_confirm_confidence_threshold
+    elif latest_class == 1:
+        required_count = status_stable_count
+        required_confidence = status_confidence_threshold
+    elif latest_class == 2:
+        required_count = shake_stable_count
+        required_confidence = shake_confidence_threshold
+    else:
+        required_count = stable_count
+        required_confidence = confidence_threshold
+
+    if len(history) < required_count:
+        return None
+
+    window = list(history)[-required_count:]
     first_class = window[0].class_id
     if any(prediction.class_id != first_class for prediction in window):
         return None
-    if any(prediction.confidence < confidence_threshold for prediction in window):
+    if any(prediction.confidence < required_confidence for prediction in window):
         return None
     return window[-1]
 
@@ -173,10 +238,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum class confidence required before triggering an action.",
     )
     parser.add_argument(
+        "--status-confidence",
+        default=0.88,
+        type=float,
+        help="Minimum confidence required before git status triggers.",
+    )
+    parser.add_argument(
+        "--status-stable-count",
+        default=1,
+        type=int,
+        help="Number of same status predictions required before git status triggers.",
+    )
+    parser.add_argument(
         "--cooldown",
         default=2.0,
         type=float,
         help="Seconds to ignore repeated actions after a gesture triggers.",
+    )
+    parser.add_argument(
+        "--idle-confidence",
+        default=0.70,
+        type=float,
+        help="Minimum idle confidence required before the next gesture can trigger.",
+    )
+    parser.add_argument(
+        "--status-repeat-seconds",
+        default=5.0,
+        type=float,
+        help="Minimum seconds between repeated git status actions.",
+    )
+    parser.add_argument(
+        "--shake-confidence",
+        default=0.65,
+        type=float,
+        help="Minimum confidence required before ShakeCancel triggers.",
+    )
+    parser.add_argument(
+        "--shake-stable-count",
+        default=1,
+        type=int,
+        help="Number of same shake predictions required before ShakeCancel triggers.",
     )
     parser.add_argument(
         "--push-confirm-window",
@@ -184,7 +285,66 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Seconds after a successful pull where 1Tap confirms git push and ShakeCancel cancels.",
     )
+    parser.add_argument(
+        "--push-confirm-confidence",
+        default=0.70,
+        type=float,
+        help="Minimum 1Tap confidence required to confirm a pending push.",
+    )
+    parser.add_argument(
+        "--push-confirm-stable-count",
+        default=1,
+        type=int,
+        help="Number of same 1Tap predictions required to confirm a pending push.",
+    )
+    parser.add_argument(
+        "--ai-review",
+        action="store_true",
+        help="Run a Groq diff review before a tap-confirmed push.",
+    )
+    parser.add_argument(
+        "--ai-block-high-risk",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Block tap-confirmed push when Groq reports high risk.",
+    )
+    parser.add_argument(
+        "--ai-help",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Ask Groq to explain failed pull/push operations.",
+    )
     return parser
+
+
+def review_before_push(repo: Path, haptics: SharedSerialHaptics | None, block_high_risk: bool) -> bool:
+    print("\nRunning Groq review before push...")
+    try:
+        review = review_repo(repo)
+    except Exception as error:
+        print(f"Groq review failed: {error}")
+        print("Push blocked because AI review did not complete.")
+        if haptics is not None:
+            haptics.failure()
+        return False
+
+    print_review(review)
+    if review.has_no_diff:
+        print("\nPush canceled: there are no staged or unstaged code changes to review.")
+        print("Stage or edit files first, then run the pull/push confirmation flow again.")
+        print("Manual stage command if needed: git add -A")
+        if haptics is not None:
+            haptics.failure()
+        return False
+
+    if review.is_high_risk and block_high_risk:
+        print("\nPush blocked by Groq review. Fix or inspect the issue, then try again.")
+        if haptics is not None:
+            haptics.failure()
+        return False
+
+    print("\nGroq review did not block the push.")
+    return True
 
 
 def main() -> int:
@@ -202,7 +362,7 @@ def main() -> int:
     print("ML gesture controls:")
     print("  CLASS 0 / Idle               -> no action")
     print("  CLASS 1 / 1Tap               -> git status, or confirm push if pending")
-    print("  CLASS 2 / ShakeCancel        -> cancel pending push")
+    print("  CLASS 2 / ShakeCancel        -> cancel pending push, or toggle motors")
     print("  CLASS 3 / TiltForward/Pull   -> git pull, then request push approval")
     print(f"Push confirmation window: {args.push_confirm_window:.1f}s")
     print("Press Ctrl+C to stop.\n")
@@ -232,10 +392,20 @@ def main() -> int:
                     show_echoes=args.debug,
                 )
 
-            history: deque[Prediction] = deque(maxlen=max(args.stable_count, 1))
+            history_size = max(
+                args.stable_count,
+                args.status_stable_count,
+                args.shake_stable_count,
+                args.push_confirm_stable_count,
+                1,
+            )
+            history: deque[Prediction] = deque(maxlen=history_size)
             last_trigger_time = 0.0
             last_action_class: int | None = None
             pending_push: PendingPush | None = None
+            motor_state = MotorState(enabled=not args.no_haptic)
+            gesture_armed = True
+            last_status_time = 0.0
 
             print("Listening for ML predictions.\n")
             while True:
@@ -251,41 +421,91 @@ def main() -> int:
                     continue
 
                 history.append(prediction)
-                stable = stable_prediction(history, args.stable_count, args.confidence)
+                stable = stable_prediction(
+                    history,
+                    args.stable_count,
+                    args.confidence,
+                    args.status_stable_count,
+                    args.status_confidence,
+                    args.shake_stable_count,
+                    args.shake_confidence,
+                    bool(pending_push and pending_push.active()),
+                    args.push_confirm_stable_count,
+                    args.push_confirm_confidence,
+                )
                 if stable is None:
                     continue
 
                 now = time.monotonic()
-                if now - last_trigger_time < args.cooldown and stable.class_id == last_action_class:
-                    continue
 
                 if stable.class_id == 0:
-                    continue
-
-                print(f"Gesture detected: {stable.label} ({stable.confidence:.2f})")
-
-                if stable.class_id == 2:
-                    if pending_push and pending_push.active():
-                        pending_push = None
-                        print("Pending push canceled.\n")
-                    else:
-                        print("Cancel gesture received. No Git command will run.\n")
-                    last_trigger_time = now
-                    last_action_class = stable.class_id
-                    history.clear()
+                    if stable.confidence >= args.idle_confidence:
+                        gesture_armed = True
                     continue
 
                 if pending_push and not pending_push.active():
                     pending_push = None
                     print("Push approval expired. No push will run.\n")
 
-                if stable.class_id == 1 and pending_push and pending_push.active():
-                    pending_push = None
-                    run_action("push", repo, haptics)
-                    last_trigger_time = time.monotonic()
+                if stable.class_id == 2:
+                    print(f"Gesture detected: {stable.label} ({stable.confidence:.2f})")
+                    if pending_push and pending_push.active():
+                        pending_push = None
+                        print("Pending push canceled.\n")
+                    else:
+                        enabled = motor_state.toggle()
+                        print(f"Motors {'enabled' if enabled else 'disabled'}.\n")
+                        active_haptics = motor_state.haptics(haptics)
+                        if active_haptics is not None:
+                            active_haptics.success()
+                    last_trigger_time = now
                     last_action_class = stable.class_id
+                    gesture_armed = False
                     history.clear()
                     continue
+
+                if stable.class_id == 1 and pending_push and pending_push.active():
+                    print(f"Gesture detected: {stable.label} ({stable.confidence:.2f})")
+                    pending_push = None
+                    active_haptics = motor_state.haptics(haptics)
+                    if args.ai_review and not review_before_push(repo, active_haptics, args.ai_block_high_risk):
+                        last_trigger_time = time.monotonic()
+                        last_action_class = stable.class_id
+                        gesture_armed = False
+                        history.clear()
+                        continue
+                    run_action("push", repo, active_haptics, args.ai_help)
+                    last_trigger_time = time.monotonic()
+                    last_action_class = stable.class_id
+                    gesture_armed = False
+                    history.clear()
+                    continue
+
+                if not gesture_armed:
+                    if args.debug:
+                        print(
+                            f"Ignoring {stable.label} ({stable.confidence:.2f}) "
+                            "until idle is seen."
+                    )
+                    continue
+
+                if (
+                    stable.class_id == 1
+                    and not (pending_push and pending_push.active())
+                    and now - last_status_time < args.status_repeat_seconds
+                ):
+                    if args.debug:
+                        print(
+                            f"Ignoring repeated status ({stable.confidence:.2f}) "
+                            f"for {args.status_repeat_seconds:.1f}s."
+                        )
+                    continue
+
+                if now - last_trigger_time < args.cooldown and stable.class_id == last_action_class:
+                    continue
+
+                print(f"Gesture detected: {stable.label} ({stable.confidence:.2f})")
+                gesture_armed = False
 
                 action = CLASS_ACTIONS.get(stable.class_id)
                 if action is None:
@@ -294,7 +514,9 @@ def main() -> int:
                     last_action_class = stable.class_id
                     continue
 
-                result = run_action(action, repo, haptics)
+                result = run_action(action, repo, motor_state.haptics(haptics), args.ai_help)
+                if action == "status":
+                    last_status_time = time.monotonic()
                 if stable.class_id == 3 and result.succeeded and args.push_confirm_window > 0:
                     pending_push = PendingPush(time.monotonic() + args.push_confirm_window)
                     print(

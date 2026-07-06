@@ -6,6 +6,7 @@ from pathlib import Path
 
 import serial
 
+from groq_review import explain_git_failure, print_git_help
 from haptic_controller import HapticController, load_config
 
 
@@ -101,6 +102,26 @@ def play_feedback(result: GitResult, config_path: Path) -> int:
     return 0
 
 
+def print_ai_git_help(result: GitResult, enabled: bool) -> None:
+    if not enabled or result.succeeded or result.action not in {"pull", "push"}:
+        return
+
+    print("\nAsking Groq to explain the Git failure...")
+    try:
+        help_text = explain_git_failure(
+            repo=result.repo,
+            command=result.command,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+    except Exception as error:
+        print(f"Groq Git help failed: {error}", file=sys.stderr)
+        return
+
+    print_git_help(help_text)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Git commands with FRDM-MCXN947 haptic feedback.")
     parser.add_argument(
@@ -125,6 +146,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run the Git command and print output without sending motor feedback.",
     )
+    parser.add_argument(
+        "--ai-help",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Ask Groq to explain failed pull/push operations.",
+    )
     return parser
 
 
@@ -143,6 +170,8 @@ def main() -> int:
     haptic_failed = 0
     if not args.no_haptic:
         haptic_failed = play_feedback(result, args.config)
+
+    print_ai_git_help(result, args.ai_help)
 
     if result.succeeded:
         return haptic_failed

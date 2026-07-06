@@ -1,2 +1,5 @@
 pyserial
 rich
+groq
+python-dotenv
+truststore

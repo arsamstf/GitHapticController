@@ -8,6 +8,7 @@ from pathlib import Path
 import serial
 
 from git_haptic import GitResult, print_git_result
+from groq_review import explain_git_failure, print_git_help
 from haptic_controller import find_serial_port, load_config
 from touch_git_controller import (
     SharedSerialHaptics,
@@ -188,6 +189,28 @@ def print_analysis(analysis: RecoveryAnalysis) -> None:
     print("Long press: retry original command")
 
 
+def print_ai_git_help(result: GitResult, analysis: RecoveryAnalysis, enabled: bool) -> None:
+    if not enabled:
+        return
+
+    print("\nAsking Groq to explain the Git failure...")
+    try:
+        help_text = explain_git_failure(
+            repo=result.repo,
+            command=result.command,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            category=analysis.category,
+            safe_command=analysis.safe_command,
+        )
+    except Exception as error:
+        print(f"Groq Git help failed: {error}")
+        return
+
+    print_git_help(help_text)
+
+
 def wait_for_gesture(board: serial.Serial, gesture_config: GestureConfig) -> str:
     press_started_at: float | None = None
     long_press_fired = False
@@ -245,16 +268,19 @@ def handle_failure_loop(
     board: serial.Serial,
     haptics: SharedSerialHaptics,
     gesture_config: GestureConfig,
+    ai_help: bool,
 ) -> int:
     result = initial_result
     analysis = classify_failure(result)
     print_analysis(analysis)
+    print_ai_git_help(result, analysis, ai_help)
 
     while True:
         gesture = wait_for_gesture(board, gesture_config)
 
         if gesture == "double":
             print_analysis(analysis)
+            print_ai_git_help(result, analysis, ai_help)
             continue
 
         if gesture == "tap":
@@ -281,6 +307,7 @@ def handle_failure_loop(
             else:
                 analysis = classify_failure(recovery_result)
                 print_analysis(analysis)
+                print_ai_git_help(recovery_result, analysis, ai_help)
             continue
 
         if gesture == "long":
@@ -291,6 +318,7 @@ def handle_failure_loop(
                 return 0
             analysis = classify_failure(result)
             print_analysis(analysis)
+            print_ai_git_help(result, analysis, ai_help)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -321,6 +349,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.25,
         type=float,
         help="Maximum gap between taps that reprints the explanation.",
+    )
+    parser.add_argument(
+        "--ai-help",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Ask Groq to explain failed pull/push operations and safe next steps.",
     )
     return parser
 
@@ -376,6 +410,7 @@ def main() -> int:
                 board=board,
                 haptics=haptics,
                 gesture_config=gesture_config,
+                ai_help=args.ai_help,
             )
 
     except KeyboardInterrupt:
