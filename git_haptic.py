@@ -1,4 +1,5 @@
 import argparse
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -57,6 +58,7 @@ def run_git_action(action: str, repo: Path) -> GitResult:
         cwd=repo,
         capture_output=True,
         text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     return GitResult(
         action=action,

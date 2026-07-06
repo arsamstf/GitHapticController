@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+*.lnk
+.git_haptic_*.pid
+.git_haptic_*.lock
+launcher_error.log
+watcher_error.log

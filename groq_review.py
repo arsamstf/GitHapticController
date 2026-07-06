@@ -49,7 +49,13 @@ class AIGitHelp:
 
 
 def run_git(repo: Path, command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=repo, capture_output=True, text=True)
+    return subprocess.run(
+        command,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
 
 
 def git_output(repo: Path, command: list[str]) -> str:

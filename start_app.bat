@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-.\.venv\Scripts\python.exe git_haptic_app.py
+.\.venv\Scripts\pythonw.exe git_haptic_app.py

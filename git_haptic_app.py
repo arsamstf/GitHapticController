@@ -15,6 +15,8 @@ from haptic_controller import HapticController, load_config
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_REPO = Path(r"C:\GitHapticJavaDemo")
+PROJECT_PYTHON = APP_DIR / ".venv" / "Scripts" / "python.exe"
+APP_PID_FILE = APP_DIR / ".git_haptic_app.pid"
 
 COLORS = {
     "window": "#f5f5f7",
@@ -45,6 +47,7 @@ class GitHapticApp(tk.Tk):
         self.controller_reader: threading.Thread | None = None
         self.repo_var = tk.StringVar(value=str(DEFAULT_REPO if DEFAULT_REPO.exists() else Path.cwd()))
         self.ai_review_var = tk.BooleanVar(value=True)
+        self.auto_ai_scan_var = tk.BooleanVar(value=True)
         self.no_haptic_var = tk.BooleanVar(value=False)
         self.debug_var = tk.BooleanVar(value=False)
         self.developer_mode_var = tk.BooleanVar(value=False)
@@ -62,6 +65,7 @@ class GitHapticApp(tk.Tk):
         self.developer_mode_var.trace_add("write", lambda *_: self.toggle_developer_mode())
         self.after(100, self._poll_output_queue)
         self.after(250, self.refresh_repo_status)
+        self.after(1200, self.run_startup_ai_scan)
 
     def _build_ui(self) -> None:
         self._configure_style()
@@ -117,7 +121,7 @@ class GitHapticApp(tk.Tk):
         )
         ttk.Button(controls, text="Pull", style="Soft.TButton", command=lambda: self.run_git_button("pull")).grid(row=0, column=3, padx=(0, 8))
         ttk.Button(controls, text="Push", style="Soft.TButton", command=lambda: self.run_git_button("push")).grid(row=0, column=4, padx=(0, 14))
-        ttk.Button(controls, text="AI Review", style="Soft.TButton", command=self.run_ai_review).grid(row=0, column=5, padx=(0, 14))
+        ttk.Button(controls, text="AI Review", style="Soft.TButton", command=lambda: self.run_ai_review(auto=False)).grid(row=0, column=5, padx=(0, 14))
         ttk.Button(controls, text="Success Motor", style="Soft.TButton", command=lambda: self.run_motor("success")).grid(
             row=0, column=6, padx=(0, 8)
         )
@@ -128,13 +132,16 @@ class GitHapticApp(tk.Tk):
         ttk.Checkbutton(options, text="AI review before tap-confirmed push", variable=self.ai_review_var, style="App.TCheckbutton").grid(
             row=0, column=0, sticky="w", padx=(0, 16)
         )
-        ttk.Checkbutton(options, text="No haptics", variable=self.no_haptic_var, style="App.TCheckbutton").grid(
+        ttk.Checkbutton(options, text="Auto AI scan on open", variable=self.auto_ai_scan_var, style="App.TCheckbutton").grid(
             row=0, column=1, sticky="w", padx=(0, 16)
         )
-        ttk.Checkbutton(options, text="Developer Mode", variable=self.developer_mode_var, style="App.TCheckbutton").grid(
+        ttk.Checkbutton(options, text="No haptics", variable=self.no_haptic_var, style="App.TCheckbutton").grid(
             row=0, column=2, sticky="w", padx=(0, 16)
         )
-        ttk.Checkbutton(options, text="Raw serial debug", variable=self.debug_var, style="App.TCheckbutton").grid(row=0, column=3, sticky="w")
+        ttk.Checkbutton(options, text="Developer Mode", variable=self.developer_mode_var, style="App.TCheckbutton").grid(
+            row=0, column=3, sticky="w", padx=(0, 16)
+        )
+        ttk.Checkbutton(options, text="Raw serial debug", variable=self.debug_var, style="App.TCheckbutton").grid(row=0, column=4, sticky="w")
 
         body = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         body.grid(row=3, column=0, sticky="nsew", padx=24, pady=(0, 14))
@@ -333,6 +340,9 @@ class GitHapticApp(tk.Tk):
     def enqueue_log(self, text: str, tag: str | None = None) -> None:
         self.output_queue.put((text, tag or ""))
 
+    def ui(self, callback, *args) -> None:
+        self.after(0, callback, *args)
+
     def _poll_output_queue(self) -> None:
         while True:
             try:
@@ -351,6 +361,10 @@ class GitHapticApp(tk.Tk):
 
         threading.Thread(target=wrapped, daemon=True).start()
 
+    def run_startup_ai_scan(self) -> None:
+        if self.auto_ai_scan_var.get():
+            self.run_ai_review(auto=True)
+
     def start_controller(self) -> None:
         if self.controller_process and self.controller_process.poll() is None:
             messagebox.showinfo("Controller already running", "The controller is already listening for gestures.")
@@ -362,7 +376,7 @@ class GitHapticApp(tk.Tk):
             return
 
         command = [
-            sys.executable,
+            str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else Path(sys.executable)),
             str(APP_DIR / "ml_git_controller.py"),
             "--repo",
             str(repo),
@@ -392,6 +406,7 @@ class GitHapticApp(tk.Tk):
             text=True,
             bufsize=1,
             env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         self.status_var.set("Running")
         self.controller_reader = threading.Thread(target=self._read_controller_output, daemon=True)
@@ -406,17 +421,17 @@ class GitHapticApp(tk.Tk):
             if "failed" in line.lower() or "error" in line.lower() or "blocked" in line.lower():
                 tag = "error"
             self.enqueue_log(line, tag)
-            self._update_summary_from_controller_line(line)
+            self.after(0, self._update_summary_from_controller_line, line)
             if "Motors enabled" in line:
-                self.motors_var.set("Enabled")
+                self.after(0, self.motors_var.set, "Enabled")
             elif "Motors disabled" in line:
-                self.motors_var.set("Disabled")
+                self.after(0, self.motors_var.set, "Disabled")
             if "Gesture action:" in line or "Exit code:" in line:
                 self.after(0, self.refresh_repo_status)
         returncode = process.wait()
-        self.status_var.set("Stopped")
-        self.last_gesture_var.set("Stopped")
-        self.add_quick_line(f"Controller stopped with exit code {returncode}.")
+        self.after(0, self.status_var.set, "Stopped")
+        self.after(0, self.last_gesture_var.set, "Stopped")
+        self.after(0, self.add_quick_line, f"Controller stopped with exit code {returncode}.")
         self.enqueue_log(f"\nController stopped with exit code {returncode}.\n", "muted")
 
     def _update_summary_from_controller_line(self, line: str) -> None:
@@ -473,34 +488,57 @@ class GitHapticApp(tk.Tk):
         def task() -> None:
             repo = self.repo_path()
             self.enqueue_log(f"\nRunning git {action}...\n", "event")
-            self.last_action_var.set(f"git {action}")
-            self.add_quick_line(f"Running git {action}.")
+            self.ui(self.last_action_var.set, f"git {action}")
+            self.ui(self.add_quick_line, f"Running git {action}.")
             result = run_git_action(action, repo)
-            self.last_result_var.set("Success" if result.succeeded else f"Failed ({result.returncode})")
+            self.ui(self.last_result_var.set, "Success" if result.succeeded else f"Failed ({result.returncode})")
             self.enqueue_log(f"Repo: {result.repo}\nCommand: {' '.join(result.command)}\nExit code: {result.returncode}\n")
             if result.stdout.strip():
                 self.enqueue_log(f"\n--- stdout ---\n{result.stdout.rstrip()}\n")
             if result.stderr.strip():
                 self.enqueue_log(f"\n--- stderr ---\n{result.stderr.rstrip()}\n", "error" if not result.succeeded else "")
             summary = result.stdout.strip() or result.stderr.strip() or "No output."
-            self.set_quick_read(summary)
+            self.ui(self.set_quick_read, summary)
             self.enqueue_log("\n")
             self.after(0, self.refresh_repo_status)
 
         self.run_background(f"git {action}", task)
 
-    def run_ai_review(self) -> None:
+    def play_ai_review_feedback(self, risk_level: str, recommendation: str) -> None:
+        if self.no_haptic_var.get():
+            return
+        if self.controller_process and self.controller_process.poll() is None:
+            self.ui(self.motors_var.set, "In use by controller")
+            return
+
+        serious = risk_level.lower() == "high" or recommendation == "do_not_push"
+        try:
+            config = load_config(APP_DIR / "config.json")
+            with HapticController(config) as controller:
+                if serious:
+                    controller.failure()
+                    self.ui(self.motors_var.set, "Serious issue alert")
+                else:
+                    controller.success()
+                    self.ui(self.motors_var.set, "Mild/clear alert")
+        except Exception as error:
+            self.enqueue_log(f"\nAI motor alert skipped: {error}\n", "muted")
+            self.ui(self.motors_var.set, "Alert skipped")
+
+    def run_ai_review(self, auto: bool = False) -> None:
         def task() -> None:
             repo = self.repo_path()
-            self.enqueue_log("\nRunning Groq AI review...\n", "event")
-            self.ai_state_var.set("Reviewing")
-            self.add_quick_line("Running Groq AI review.")
+            prefix = "Automatic" if auto else "Manual"
+            self.enqueue_log(f"\n{prefix} Groq AI review...\n", "event")
+            self.ui(self.ai_state_var.set, "Reviewing")
+            self.ui(self.add_quick_line, f"{prefix} Groq AI review started.")
             review = review_repo(repo)
-            self.ai_state_var.set(f"{review.risk_level} risk")
-            self.set_quick_read(
+            self.ui(self.ai_state_var.set, f"{review.risk_level} risk")
+            self.ui(
+                self.set_quick_read,
                 f"AI review: {review.risk_level} risk\n"
                 f"{review.summary}\n\n"
-                f"Recommendation: {review.push_recommendation}"
+                f"Recommendation: {review.push_recommendation}",
             )
             self.enqueue_log(f"Summary: {review.summary}\n")
             self.enqueue_log(f"Risk: {review.risk_level}\n")
@@ -514,25 +552,45 @@ class GitHapticApp(tk.Tk):
                 self.enqueue_log("\nNext steps:\n")
                 for step in review.next_steps:
                     self.enqueue_log(f"- {step}\n")
+            if auto:
+                self.play_ai_review_feedback(review.risk_level, review.push_recommendation)
             self.enqueue_log("\n")
 
         self.run_background("AI review", task)
 
     def run_motor(self, pattern: str) -> None:
+        if self.controller_process and self.controller_process.poll() is None:
+            message = "Stop the controller before using manual motor tests. The running gesture controller is already using the board."
+            self.motors_var.set("In use by controller")
+            self.last_result_var.set("Motor port busy")
+            self.set_quick_read(message)
+            self.enqueue_log(f"\n{message}\n", "muted")
+            return
+
         def task() -> None:
             config = load_config(APP_DIR / "config.json")
             self.enqueue_log(f"\nPlaying {pattern} motor pattern...\n", "event")
-            self.last_action_var.set(f"{pattern} motor")
-            self.add_quick_line(f"Playing {pattern} motor pattern.")
-            with HapticController(config) as controller:
-                if pattern == "success":
-                    controller.success()
-                    self.motors_var.set("Success pulse sent")
-                elif pattern == "failure":
-                    controller.failure()
-                    self.motors_var.set("Failure pulse sent")
-            self.last_result_var.set("Motor command complete")
-            self.enqueue_log("Motor command complete.\n")
+            self.ui(self.last_action_var.set, f"{pattern} motor")
+            self.ui(self.add_quick_line, f"Playing {pattern} motor pattern.")
+            try:
+                with HapticController(config) as controller:
+                    if pattern == "success":
+                        controller.success()
+                        self.ui(self.motors_var.set, "Success pulse sent")
+                    elif pattern == "failure":
+                        controller.failure()
+                        self.ui(self.motors_var.set, "Failure pulse sent")
+                self.ui(self.last_result_var.set, "Motor command complete")
+                self.enqueue_log("Motor command complete.\n")
+            except Exception as error:
+                message = (
+                    "Motor test could not open the board. Close MCUXpresso terminal, Tera Term, "
+                    "or any other controller window using the COM port, then try again."
+                )
+                self.ui(self.motors_var.set, "Port busy")
+                self.ui(self.last_result_var.set, "Motor test failed")
+                self.ui(self.set_quick_read, message)
+                self.enqueue_log(f"\n{message}\nDetails: {error}\n", "error")
 
         self.run_background("motor command", task)
 
@@ -544,7 +602,13 @@ class GitHapticApp(tk.Tk):
             return
 
         def run(command: list[str]) -> subprocess.CompletedProcess[str]:
-            return subprocess.run(command, cwd=repo, capture_output=True, text=True)
+            return subprocess.run(
+                command,
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
 
         branch = run(["git", "branch", "--show-current"])
         if branch.returncode == 0 and branch.stdout.strip():
@@ -570,9 +634,53 @@ class GitHapticApp(tk.Tk):
         super().destroy()
 
 
+def is_pid_running(pid: int) -> bool:
+    if pid <= 0 or os.name != "nt":
+        return False
+    completed = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+        capture_output=True,
+        text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    return str(pid) in completed.stdout
+
+
+def acquire_pid_file(path: Path) -> bool:
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                existing_pid = int(path.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                existing_pid = 0
+            if is_pid_running(existing_pid):
+                return False
+            try:
+                path.unlink()
+            except OSError:
+                return False
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(str(os.getpid()))
+        return True
+    return False
+
+
 def main() -> int:
+    if not acquire_pid_file(APP_PID_FILE):
+        os._exit(0)
+
     app = GitHapticApp()
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        try:
+            if APP_PID_FILE.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                APP_PID_FILE.unlink()
+        except OSError:
+            pass
     return 0
 
 
