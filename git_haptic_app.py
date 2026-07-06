@@ -47,12 +47,19 @@ class GitHapticApp(tk.Tk):
         self.ai_review_var = tk.BooleanVar(value=True)
         self.no_haptic_var = tk.BooleanVar(value=False)
         self.debug_var = tk.BooleanVar(value=False)
+        self.developer_mode_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Stopped")
         self.branch_var = tk.StringVar(value="-")
         self.changes_var = tk.StringVar(value="-")
         self.motors_var = tk.StringVar(value="Unknown")
+        self.last_gesture_var = tk.StringVar(value="Waiting")
+        self.last_action_var = tk.StringVar(value="-")
+        self.last_result_var = tk.StringVar(value="-")
+        self.ai_state_var = tk.StringVar(value="Ready")
+        self.push_state_var = tk.StringVar(value="No pending push")
 
         self._build_ui()
+        self.developer_mode_var.trace_add("write", lambda *_: self.toggle_developer_mode())
         self.after(100, self._poll_output_queue)
         self.after(250, self.refresh_repo_status)
 
@@ -124,7 +131,10 @@ class GitHapticApp(tk.Tk):
         ttk.Checkbutton(options, text="No haptics", variable=self.no_haptic_var, style="App.TCheckbutton").grid(
             row=0, column=1, sticky="w", padx=(0, 16)
         )
-        ttk.Checkbutton(options, text="Debug serial output", variable=self.debug_var, style="App.TCheckbutton").grid(row=0, column=2, sticky="w")
+        ttk.Checkbutton(options, text="Developer Mode", variable=self.developer_mode_var, style="App.TCheckbutton").grid(
+            row=0, column=2, sticky="w", padx=(0, 16)
+        )
+        ttk.Checkbutton(options, text="Raw serial debug", variable=self.debug_var, style="App.TCheckbutton").grid(row=0, column=3, sticky="w")
 
         body = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         body.grid(row=3, column=0, sticky="nsew", padx=24, pady=(0, 14))
@@ -149,15 +159,47 @@ class GitHapticApp(tk.Tk):
         for offset, text in enumerate(gestures, start=6):
             ttk.Label(left, text=text, style="Body.TLabel", wraplength=310).grid(row=offset, column=0, columnspan=2, sticky="w", pady=4)
 
-        right = ttk.Frame(body, style="Card.TFrame", padding=12)
-        right.rowconfigure(0, weight=1)
-        right.columnconfigure(0, weight=1)
+        right = ttk.Frame(body, style="Card.TFrame", padding=18)
+        right.columnconfigure(1, weight=1)
         body.add(right, weight=3)
 
-        self.log = tk.Text(
+        ttk.Label(right, text="Current Session", style="Section.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        self._add_info_row(right, 1, "Last gesture", self.last_gesture_var)
+        self._add_info_row(right, 2, "Last action", self.last_action_var)
+        self._add_info_row(right, 3, "Last result", self.last_result_var)
+        self._add_info_row(right, 4, "AI review", self.ai_state_var)
+        self._add_info_row(right, 5, "Push approval", self.push_state_var)
+
+        ttk.Separator(right).grid(row=6, column=0, columnspan=2, sticky="ew", pady=16)
+        ttk.Label(right, text="Quick Read", style="Section.TLabel").grid(row=7, column=0, columnspan=2, sticky="w")
+        self.quick_read = tk.Text(
             right,
             wrap="word",
-            height=24,
+            height=10,
+            borderwidth=0,
+            relief="flat",
+            font=("Segoe UI", 10),
+            bg=COLORS["card_alt"],
+            fg=COLORS["text"],
+            padx=14,
+            pady=12,
+        )
+        self.quick_read.grid(row=8, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        self.quick_read.insert(
+            "end",
+            "Start the controller, then use the board gestures. This panel will show the useful parts only.",
+        )
+        self.quick_read.configure(state="disabled")
+
+        self.terminal_frame = ttk.Frame(self, style="Card.TFrame", padding=12)
+        self.terminal_frame.grid(row=5, column=0, sticky="nsew", padx=24, pady=(0, 14))
+        self.terminal_frame.rowconfigure(1, weight=1)
+        self.terminal_frame.columnconfigure(0, weight=1)
+        ttk.Label(self.terminal_frame, text="Developer Terminal", style="Section.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self.log = tk.Text(
+            self.terminal_frame,
+            wrap="word",
+            height=11,
             borderwidth=0,
             relief="flat",
             font=("Cascadia Mono", 10),
@@ -167,17 +209,18 @@ class GitHapticApp(tk.Tk):
             padx=14,
             pady=14,
         )
-        self.log.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(right, command=self.log.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
+        self.log.grid(row=1, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(self.terminal_frame, command=self.log.yview)
+        scroll.grid(row=1, column=1, sticky="ns")
         self.log.configure(yscrollcommand=scroll.set)
         self.log.tag_configure("error", foreground="#ff6961")
         self.log.tag_configure("success", foreground="#7ee787")
         self.log.tag_configure("event", foreground="#79c0ff")
         self.log.tag_configure("muted", foreground="#9aa4b2")
+        self.terminal_frame.grid_remove()
 
         footer = ttk.Frame(self, style="App.TFrame", padding=(24, 0, 24, 18))
-        footer.grid(row=5, column=0, sticky="ew")
+        footer.grid(row=6, column=0, sticky="ew")
         ttk.Button(footer, text="Clear Log", style="Soft.TButton", command=self.clear_log).grid(row=0, column=0, sticky="w")
 
     def _configure_style(self) -> None:
@@ -251,8 +294,29 @@ class GitHapticApp(tk.Tk):
         self.log.insert("end", text, tag)
         self.log.see("end")
 
+    def set_quick_read(self, text: str) -> None:
+        self.quick_read.configure(state="normal")
+        self.quick_read.delete("1.0", "end")
+        self.quick_read.insert("end", text.strip())
+        self.quick_read.configure(state="disabled")
+
+    def add_quick_line(self, text: str) -> None:
+        self.quick_read.configure(state="normal")
+        current = self.quick_read.get("1.0", "end").strip()
+        next_text = f"{current}\n{text.strip()}" if current else text.strip()
+        lines = next_text.splitlines()[-10:]
+        self.quick_read.delete("1.0", "end")
+        self.quick_read.insert("end", "\n".join(lines))
+        self.quick_read.configure(state="disabled")
+
     def clear_log(self) -> None:
         self.log.delete("1.0", "end")
+
+    def toggle_developer_mode(self) -> None:
+        if self.developer_mode_var.get():
+            self.terminal_frame.grid()
+        else:
+            self.terminal_frame.grid_remove()
 
     def enqueue_log(self, text: str, tag: str | None = None) -> None:
         self.output_queue.put((text, tag or ""))
@@ -295,7 +359,7 @@ class GitHapticApp(tk.Tk):
             command.append("--ai-review")
         if self.no_haptic_var.get():
             command.append("--no-haptic")
-        if self.debug_var.get():
+        if self.developer_mode_var.get() and self.debug_var.get():
             command.append("--debug")
 
         env = os.environ.copy()
@@ -303,6 +367,11 @@ class GitHapticApp(tk.Tk):
 
         self.append_log("\nStarting controller...\n", "event")
         self.append_log(f"{' '.join(command)}\n", "muted")
+        self.set_quick_read("Controller started. Listening for gestures from the board.")
+        self.last_gesture_var.set("Listening")
+        self.last_action_var.set("-")
+        self.last_result_var.set("-")
+        self.push_state_var.set("No pending push")
         self.controller_process = subprocess.Popen(
             command,
             cwd=APP_DIR,
@@ -325,6 +394,7 @@ class GitHapticApp(tk.Tk):
             if "failed" in line.lower() or "error" in line.lower() or "blocked" in line.lower():
                 tag = "error"
             self.enqueue_log(line, tag)
+            self._update_summary_from_controller_line(line)
             if "Motors enabled" in line:
                 self.motors_var.set("Enabled")
             elif "Motors disabled" in line:
@@ -333,7 +403,45 @@ class GitHapticApp(tk.Tk):
                 self.after(0, self.refresh_repo_status)
         returncode = process.wait()
         self.status_var.set("Stopped")
+        self.last_gesture_var.set("Stopped")
+        self.add_quick_line(f"Controller stopped with exit code {returncode}.")
         self.enqueue_log(f"\nController stopped with exit code {returncode}.\n", "muted")
+
+    def _update_summary_from_controller_line(self, line: str) -> None:
+        clean = line.strip()
+        if not clean:
+            return
+
+        if clean.startswith("Gesture detected:"):
+            gesture = clean.replace("Gesture detected:", "", 1).strip()
+            self.last_gesture_var.set(gesture)
+            self.add_quick_line(f"Gesture: {gesture}")
+        elif clean.startswith("Gesture action:"):
+            action = clean.replace("Gesture action:", "", 1).strip()
+            self.last_action_var.set(action)
+            self.add_quick_line(f"Action: {action}")
+        elif clean.startswith("Exit code:"):
+            code = clean.replace("Exit code:", "", 1).strip()
+            self.last_result_var.set("Success" if code == "0" else f"Failed ({code})")
+        elif "Groq review did not block the push" in clean:
+            self.ai_state_var.set("Review passed")
+            self.add_quick_line("AI review passed. Push allowed.")
+        elif "Push blocked" in clean or "Push canceled" in clean:
+            self.ai_state_var.set("Blocked")
+            self.add_quick_line(clean)
+        elif "Running Groq review" in clean:
+            self.ai_state_var.set("Reviewing")
+        elif "Push pending:" in clean:
+            self.push_state_var.set("Waiting for tap approval")
+            self.add_quick_line("Push pending. Tap confirms, shake cancels.")
+        elif "Pending push canceled" in clean:
+            self.push_state_var.set("Canceled")
+            self.add_quick_line("Pending push canceled.")
+        elif "Push approval expired" in clean:
+            self.push_state_var.set("Expired")
+            self.add_quick_line("Push approval expired.")
+        elif "Listening for" in clean:
+            self.status_var.set("Running")
 
     def stop_controller(self) -> None:
         process = self.controller_process
@@ -341,6 +449,7 @@ class GitHapticApp(tk.Tk):
             self.status_var.set("Stopped")
             return
         self.append_log("\nStopping controller...\n", "event")
+        self.add_quick_line("Stopping controller.")
         process.terminate()
         try:
             process.wait(timeout=3)
@@ -352,12 +461,17 @@ class GitHapticApp(tk.Tk):
         def task() -> None:
             repo = self.repo_path()
             self.enqueue_log(f"\nRunning git {action}...\n", "event")
+            self.last_action_var.set(f"git {action}")
+            self.add_quick_line(f"Running git {action}.")
             result = run_git_action(action, repo)
+            self.last_result_var.set("Success" if result.succeeded else f"Failed ({result.returncode})")
             self.enqueue_log(f"Repo: {result.repo}\nCommand: {' '.join(result.command)}\nExit code: {result.returncode}\n")
             if result.stdout.strip():
                 self.enqueue_log(f"\n--- stdout ---\n{result.stdout.rstrip()}\n")
             if result.stderr.strip():
                 self.enqueue_log(f"\n--- stderr ---\n{result.stderr.rstrip()}\n", "error" if not result.succeeded else "")
+            summary = result.stdout.strip() or result.stderr.strip() or "No output."
+            self.set_quick_read(summary)
             self.enqueue_log("\n")
             self.after(0, self.refresh_repo_status)
 
@@ -367,7 +481,15 @@ class GitHapticApp(tk.Tk):
         def task() -> None:
             repo = self.repo_path()
             self.enqueue_log("\nRunning Groq AI review...\n", "event")
+            self.ai_state_var.set("Reviewing")
+            self.add_quick_line("Running Groq AI review.")
             review = review_repo(repo)
+            self.ai_state_var.set(f"{review.risk_level} risk")
+            self.set_quick_read(
+                f"AI review: {review.risk_level} risk\n"
+                f"{review.summary}\n\n"
+                f"Recommendation: {review.push_recommendation}"
+            )
             self.enqueue_log(f"Summary: {review.summary}\n")
             self.enqueue_log(f"Risk: {review.risk_level}\n")
             if review.has_no_diff:
@@ -388,6 +510,8 @@ class GitHapticApp(tk.Tk):
         def task() -> None:
             config = load_config(APP_DIR / "config.json")
             self.enqueue_log(f"\nPlaying {pattern} motor pattern...\n", "event")
+            self.last_action_var.set(f"{pattern} motor")
+            self.add_quick_line(f"Playing {pattern} motor pattern.")
             with HapticController(config) as controller:
                 if pattern == "success":
                     controller.success()
@@ -395,6 +519,7 @@ class GitHapticApp(tk.Tk):
                 elif pattern == "failure":
                     controller.failure()
                     self.motors_var.set("Failure pulse sent")
+            self.last_result_var.set("Motor command complete")
             self.enqueue_log("Motor command complete.\n")
 
         self.run_background("motor command", task)
