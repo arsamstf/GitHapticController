@@ -160,22 +160,32 @@ class GitHapticApp(tk.Tk):
             ttk.Label(left, text=text, style="Body.TLabel", wraplength=310).grid(row=offset, column=0, columnspan=2, sticky="w", pady=4)
 
         right = ttk.Frame(body, style="Card.TFrame", padding=18)
-        right.columnconfigure(1, weight=1)
+        right.rowconfigure(2, weight=1)
+        right.columnconfigure(0, weight=1)
         body.add(right, weight=3)
 
-        ttk.Label(right, text="Current Session", style="Section.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        self._add_info_row(right, 1, "Last gesture", self.last_gesture_var)
-        self._add_info_row(right, 2, "Last action", self.last_action_var)
-        self._add_info_row(right, 3, "Last result", self.last_result_var)
-        self._add_info_row(right, 4, "AI review", self.ai_state_var)
-        self._add_info_row(right, 5, "Push approval", self.push_state_var)
+        ttk.Label(right, text="Current Session", style="Section.TLabel").grid(row=0, column=0, sticky="w")
 
-        ttk.Separator(right).grid(row=6, column=0, columnspan=2, sticky="ew", pady=16)
-        ttk.Label(right, text="Quick Read", style="Section.TLabel").grid(row=7, column=0, columnspan=2, sticky="w")
+        session_grid = ttk.Frame(right, style="Card.TFrame")
+        session_grid.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        session_grid.columnconfigure(1, weight=1)
+        self._add_info_row(session_grid, 0, "Last gesture", self.last_gesture_var)
+        self._add_info_row(session_grid, 1, "Last action", self.last_action_var)
+        self._add_info_row(session_grid, 2, "Last result", self.last_result_var)
+        self._add_info_row(session_grid, 3, "AI review", self.ai_state_var)
+        self._add_info_row(session_grid, 4, "Push approval", self.push_state_var)
+
+        quick_card = ttk.Frame(right, style="Inset.TFrame", padding=0)
+        quick_card.grid(row=2, column=0, sticky="nsew", pady=(18, 0))
+        quick_card.rowconfigure(1, weight=1)
+        quick_card.columnconfigure(0, weight=1)
+        ttk.Label(quick_card, text="Quick Read", style="InsetSection.TLabel").grid(
+            row=0, column=0, sticky="w", padx=14, pady=(12, 0)
+        )
         self.quick_read = tk.Text(
-            right,
+            quick_card,
             wrap="word",
-            height=10,
+            height=9,
             borderwidth=0,
             relief="flat",
             font=("Segoe UI", 10),
@@ -184,7 +194,7 @@ class GitHapticApp(tk.Tk):
             padx=14,
             pady=12,
         )
-        self.quick_read.grid(row=8, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        self.quick_read.grid(row=1, column=0, sticky="nsew", padx=0, pady=(4, 0))
         self.quick_read.insert(
             "end",
             "Start the controller, then use the board gestures. This panel will show the useful parts only.",
@@ -229,11 +239,13 @@ class GitHapticApp(tk.Tk):
         style.configure(".", font=("Segoe UI", 10), background=COLORS["window"], foreground=COLORS["text"])
         style.configure("App.TFrame", background=COLORS["window"])
         style.configure("Card.TFrame", background=COLORS["card"], bordercolor=COLORS["border"], relief="solid", borderwidth=1)
+        style.configure("Inset.TFrame", background=COLORS["card_alt"], bordercolor=COLORS["border"], relief="solid", borderwidth=1)
         style.configure("TLabel", background=COLORS["card"], foreground=COLORS["text"])
         style.configure("Title.TLabel", background=COLORS["window"], foreground=COLORS["text"], font=("Segoe UI", 26, "bold"))
         style.configure("Subtle.TLabel", background=COLORS["window"], foreground=COLORS["muted"], font=("Segoe UI", 11))
         style.configure("Caption.TLabel", background=COLORS["card"], foreground=COLORS["muted"], font=("Segoe UI", 9, "bold"))
         style.configure("Section.TLabel", background=COLORS["card"], foreground=COLORS["text"], font=("Segoe UI", 12, "bold"))
+        style.configure("InsetSection.TLabel", background=COLORS["card_alt"], foreground=COLORS["text"], font=("Segoe UI", 12, "bold"))
         style.configure("Body.TLabel", background=COLORS["card"], foreground=COLORS["muted"], font=("Segoe UI", 10))
         style.configure("Value.TLabel", background=COLORS["card"], foreground=COLORS["text"], font=("Segoe UI", 10, "bold"))
         style.configure("App.TCheckbutton", background=COLORS["window"], foreground=COLORS["muted"])
